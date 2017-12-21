@@ -893,6 +893,7 @@ func (fbo *folderBranchOps) setHeadSuccessorLocked(ctx context.Context,
 			ctx, fbo.config.Codec(), fbo.config.KBPKI(), fbo.config.MDOps(),
 			*newHandle)
 	if err != nil {
+		fbo.log.CDebugf(ctx, "oldHandle=%+v, newHandle=%+v: err=%+v", oldHandle, newHandle, err)
 		return err
 	}
 
@@ -900,6 +901,7 @@ func (fbo *folderBranchOps) setHeadSuccessorLocked(ctx context.Context,
 	newName := newHandle.GetCanonicalName()
 
 	if !resolvesTo {
+		fbo.log.CDebugf(ctx, "oldHandle=%+v, newHandle=%+v", oldHandle, newHandle)
 		return IncompatibleHandleError{
 			oldName,
 			partialResolvedOldHandle.GetCanonicalName(),
