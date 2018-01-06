@@ -10,6 +10,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path"
@@ -62,7 +63,7 @@ func (s *Server) getSite(ctx context.Context, root Root) (st *site, err error) {
 	if err != nil {
 		return nil, err
 	}
-	st = makeSite(fs)
+	st = makeSite(fs, root)
 	s.siteCache.Add(root, st)
 	return st, nil
 }
@@ -73,12 +74,16 @@ func (s *Server) handleError(w http.ResponseWriter, err error) {
 	case nil:
 	case ErrKeybasePagesRecordNotFound:
 		w.WriteHeader(http.StatusServiceUnavailable)
+		io.WriteString(w, "kbp= record is not found")
 		return
 	case ErrKeybasePagesRecordTooMany:
 		w.WriteHeader(http.StatusPreconditionFailed)
+		io.WriteString(w, "more than one kbp= record are found")
 		return
 	case ErrInvalidKeybasePagesRecord:
 		w.WriteHeader(http.StatusPreconditionFailed)
+		io.WriteString(w, "invalid kbp= record")
+		return
 	default:
 		w.WriteHeader(http.StatusInternalServerError)
 		return
@@ -143,6 +148,42 @@ func (s *Server) isDirWithNoIndexHTML(
 	}
 }
 
+const cloningFilename = "CLONING"
+
+func (s *Server) shouldShowCloningLandingPage(st *site) (bool, error) {
+	if st.root.Type != GitRoot {
+		// CLONING file only matters for git roots.
+		return false, nil
+	}
+
+	_, err := st.fs.Stat(cloningFilename)
+	switch {
+	case err == nil:
+		return true, nil
+	case os.IsNotExist(err):
+		return false, nil
+	default:
+		return false, err
+	}
+
+}
+
+// TODO: replace this with something nicer when fancy error pages and landing
+// pages are ready.
+var cloningLandingPage = []byte(`
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="UTF-8">
+		<meta http-equiv="refresh" content="5">
+	</head>
+	<body>
+		Keybase Pages server is cloning your site.
+		This page will refresh in 5 second ...
+	</body>
+</html>
+`)
+
 // ServeHTTP implements the http.Handler interface.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.config.Logger.Info("ServeHTTP",
@@ -151,13 +192,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		zap.String("proto", r.Proto),
 	)
 
+	// Don't serve the config file itself.
 	if path.Clean(strings.ToLower(r.URL.Path)) == config.DefaultConfigFilepath {
-		// Don't serve .kbp_config.
 		// TODO: integrate this check into Config?
 		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprintf(w, "Reading %s directly is forbidden.",
+			config.DefaultConfigFilepath)
 		return
 	}
 
+	// Construct a *site from DNS record.
 	root, err := LoadRootFromDNS(s.config.Logger, r.Host)
 	if err != nil {
 		s.handleError(w, err)
@@ -174,6 +218,23 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Show a landing page if site uses git root and has a CLONING file which
+	// indicates we are still cloning the assets.
+	shouldShowCloningLandingPage, err := s.shouldShowCloningLandingPage(st)
+	if err != nil {
+		s.handleError(w, err)
+		return
+	}
+	if shouldShowCloningLandingPage {
+		// TODO: replace this with something nicer when fancy error pages and
+		// landing pages are ready.
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write(cloningLandingPage)
+		return
+	}
+
+	// Get a site config, which can be either a user-defined one, or the
+	// default one if it's missing from the site root.
 	cfg, err := st.getConfig(false)
 	if err != nil {
 		// User has a .kbp_config file but it's invalid.
@@ -288,6 +349,7 @@ func (s *Server) redirectHandlerFunc(w http.ResponseWriter, req *http.Request) {
 			zap.String("url", req.URL.String()),
 			zap.String("Opaque", req.URL.Opaque))
 		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "bad request")
 		return
 	}
 	http.Redirect(w, req, "https://"+req.Host+req.URL.RequestURI(),
